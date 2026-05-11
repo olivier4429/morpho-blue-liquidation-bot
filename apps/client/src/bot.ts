@@ -196,7 +196,8 @@ export class LiquidationBot {
           `${this.logTag}ℹ️ Skipped ${position.user} on ${MarketUtils.getMarketId(marketParams)} (not profitable)`,
         );
     } catch (error) {
-      await this.notifier?.liquidationFailed(
+      /// Fire-and-forget: never block the bot loop on a Telegram round-trip.
+      void this.notifier?.liquidationFailed(
         this.chainId,
         MarketUtils.getMarketId(marketParams),
         position.user,
@@ -225,7 +226,8 @@ export class LiquidationBot {
 
     if (!(await this.convertCollateralToLoan(marketParams, seizableCollateral, encoder))) return;
 
-    await this.notifier?.liquidationDetected(
+    /// Fire-and-forget: must not delay tx submission.
+    void this.notifier?.liquidationDetected(
       this.chainId,
       MarketUtils.getMarketId(marketParams),
       position.user,
@@ -266,7 +268,7 @@ export class LiquidationBot {
           `${this.logTag}ℹ️ Skipped ${position.user} on ${MarketUtils.getMarketId(marketParams)} (not profitable)`,
         );
     } catch (error) {
-      await this.notifier?.liquidationFailed(
+      void this.notifier?.liquidationFailed(
         this.chainId,
         MarketUtils.getMarketId(marketParams),
         position.user,
@@ -325,7 +327,7 @@ export class LiquidationBot {
       if (results[1].status !== "success") {
         const reason = results[1].error ?? "simulation failure";
         console.warn(`${this.logTag}Transaction failed in simulation: ${reason}`);
-        await this.notifier?.liquidationFailed(
+        void this.notifier?.liquidationFailed(
           this.chainId,
           MarketUtils.getMarketId(marketParams),
           this.client.account.address,
@@ -349,7 +351,7 @@ export class LiquidationBot {
       );
 
       if (!profitCheck.success) {
-        await this.notifier?.liquidationFailed(
+        void this.notifier?.liquidationFailed(
           this.chainId,
           MarketUtils.getMarketId(marketParams),
           borrower,
@@ -376,7 +378,7 @@ export class LiquidationBot {
         this.flashbotAccount,
       );
 
-      await this.notifier?.liquidationExecuted(
+      void this.notifier?.liquidationExecuted(
         this.chainId,
         MarketUtils.getMarketId(marketParams),
         borrower,
@@ -389,7 +391,7 @@ export class LiquidationBot {
         address: encoder.address,
         ...functionData,
       });
-      await this.notifier?.liquidationExecuted(
+      void this.notifier?.liquidationExecuted(
         this.chainId,
         MarketUtils.getMarketId(marketParams),
         borrower,
@@ -512,19 +514,56 @@ export class LiquidationBot {
   }
 
   private async fetchMarkets() {
-    if (!this.marketsFetchingCooldownMechanism.isFetchingReady()) return;
+    if (!this.marketsFetchingCooldownMechanism.isReady()) return;
 
-    if (this.vaultWhitelist === "morpho-api")
-      this.vaultWhitelist = await fetchWhitelistedVaults(this.chainId);
+    try {
+      const wasMorphoApiVaultMode = this.vaultWhitelist === "morpho-api";
 
-    const vaultWhitelist = this.vaultWhitelist;
-    console.log(`${this.logTag}📝 Watching markets in the following vaults:`, vaultWhitelist);
+      let vaultWhitelist: Address[];
+      if (this.vaultWhitelist === "morpho-api") {
+        vaultWhitelist = await fetchWhitelistedVaults(this.chainId);
+        this.vaultWhitelist = vaultWhitelist;
+      } else {
+        vaultWhitelist = this.vaultWhitelist;
+      }
 
-    const whitelistedMarketsFromVaults = await this.dataProvider.fetchMarkets(
-      this.client,
-      vaultWhitelist,
-    );
+      console.log(`${this.logTag}📝 Watching markets in the following vaults:`, vaultWhitelist);
 
-    this.coveredMarkets = [...whitelistedMarketsFromVaults, ...this.additionalMarketsWhitelist];
+      const whitelistedMarketsFromVaults = await this.dataProvider.fetchMarkets(
+        this.client,
+        vaultWhitelist,
+      );
+
+      /// Markets discovered from vaults and from the additional whitelist may overlap; dedupe so
+      /// the data provider isn't asked to scan the same market twice.
+      this.coveredMarkets = [
+        ...new Set(
+          [...whitelistedMarketsFromVaults, ...this.additionalMarketsWhitelist].map(
+            (id) => id.toLowerCase() as Hex,
+          ),
+        ),
+      ];
+
+      /// Treat "no markets to cover" as a transient failure: a flaky Morpho API or RPC blip at
+      /// boot must not lock the bot into an empty market set for the whole cooldown period.
+      const morphoApiReturnedNoVaults = wasMorphoApiVaultMode && vaultWhitelist.length === 0;
+      const vaultsGaveNoMarkets =
+        vaultWhitelist.length > 0 &&
+        whitelistedMarketsFromVaults.length === 0 &&
+        this.additionalMarketsWhitelist.length === 0;
+
+      if (morphoApiReturnedNoVaults || vaultsGaveNoMarkets) {
+        console.warn(
+          `${this.logTag}fetchMarkets returned an empty market set, scheduling a fast retry`,
+        );
+        this.marketsFetchingCooldownMechanism.scheduleRetryAfterFailure();
+        return;
+      }
+
+      this.marketsFetchingCooldownMechanism.scheduleNextFetchAfterSuccess();
+    } catch (error) {
+      console.error(`${this.logTag}Error in fetchMarkets():`, error);
+      this.marketsFetchingCooldownMechanism.scheduleRetryAfterFailure();
+    }
   }
 }
