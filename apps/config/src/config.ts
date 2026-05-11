@@ -64,6 +64,7 @@ export const chainConfigs: Record<number, Config> = {
       liquidationBufferBps: 50,
       useFlashbots: false,
       blockInterval: 1,
+      minLiquidationValueUsd: 1,
     },
   },
   [unichain.id]: {

@@ -28,7 +28,10 @@
       "Bash(npx tsx *)",
       "Bash(rm /home/olivier/workspace/Bots/morpho-blue-liquidation-bot-olb/apps/client/check_pos.ts)",
       "Bash(pnpm build:config)",
-      "Bash(npx pnpm *)"
+      "Bash(npx pnpm *)",
+      "Bash(git -C /home/olivier/workspace/Bots/morpho-blue-liquidation-bot-olb add apps/client/src/index.ts apps/client/src/utils/telegram.ts)",
+      "Bash(ls /home/olivier/.claude/projects/-home-olivier-workspace-Bots-morpho-blue-liquidation-bot-olb-olb/memory/ 2>/dev/null || ls /home/olivier/.claude/projects/-home-olivier-workspace-Bots-morpho-blue-liquidation-bot-olb/memory/ 2>/dev/null || echo \"no memory dir found\")",
+      "Read(//home/olivier/.claude/projects/-home-olivier-workspace-Bots-morpho-blue-liquidation-bot-olb-olb/**)"
     ],
     "deny": [
       "Bash(git push --force *)",

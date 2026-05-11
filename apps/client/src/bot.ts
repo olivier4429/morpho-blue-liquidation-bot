@@ -86,6 +86,7 @@ export class LiquidationBot {
   private minLiquidationValueUsd?: number;
   private coveredMarkets: Hex[];
   private alwaysRealizeBadDebt: boolean;
+  private decimalsCache: Map<Address, number>;
 
   constructor(inputs: LiquidationBotInputs) {
     this.logTag = inputs.logTag;
@@ -108,6 +109,7 @@ export class LiquidationBot {
     this.minLiquidationValueUsd = inputs.minLiquidationValueUsd;
     this.coveredMarkets = [];
     this.alwaysRealizeBadDebt = inputs.alwaysRealizeBadDebt;
+    this.decimalsCache = new Map();
   }
 
   async run() {
@@ -227,14 +229,23 @@ export class LiquidationBot {
     if (!(await this.convertCollateralToLoan(marketParams, seizableCollateral, encoder))) return;
 
     /// Fire-and-forget: must not delay tx submission.
-    void this.notifier?.liquidationDetected(
-      this.chainId,
-      MarketUtils.getMarketId(marketParams),
-      position.user,
-      marketParams.collateralToken,
-      seizableCollateral.toString(),
-      "pre-liquidation",
-    );
+    void (async () => {
+      const decimals = await this.getDecimals(getAddress(marketParams.collateralToken)).catch(
+        () => undefined,
+      );
+      const formattedAmount =
+        decimals !== undefined
+          ? formatUnits(seizableCollateral, decimals)
+          : seizableCollateral.toString();
+      await this.notifier?.liquidationDetected(
+        this.chainId,
+        MarketUtils.getMarketId(marketParams),
+        position.user,
+        marketParams.collateralToken,
+        formattedAmount,
+        "pre-liquidation",
+      );
+    })();
 
     encoder.erc20Approve(marketParams.loanToken, position.preLiquidation, maxUint256);
 
@@ -325,7 +336,7 @@ export class LiquidationBot {
       ]);
 
       if (results[1].status !== "success") {
-        const reason = results[1].error ?? "simulation failure";
+        const reason = results[1].error?.message ?? "simulation failure";
         console.warn(`${this.logTag}Transaction failed in simulation: ${reason}`);
         void this.notifier?.liquidationFailed(
           this.chainId,
@@ -351,13 +362,6 @@ export class LiquidationBot {
       );
 
       if (!profitCheck.success) {
-        void this.notifier?.liquidationFailed(
-          this.chainId,
-          MarketUtils.getMarketId(marketParams),
-          borrower,
-          profitCheck.reason ?? "not profitable",
-          type,
-        );
         return false;
       }
 
@@ -511,6 +515,20 @@ export class LiquidationBot {
       return false;
     }
     return true;
+  }
+
+  private async getDecimals(token: Address): Promise<number> {
+    const cached = this.decimalsCache.get(token);
+    if (cached !== undefined) return cached;
+    const decimals = await readContract(this.client, {
+      address: token,
+      abi: erc20Abi,
+      functionName: "decimals",
+    })
+      .then(Number)
+      .catch(() => 18);
+    this.decimalsCache.set(token, decimals);
+    return decimals;
   }
 
   private async fetchMarkets() {
